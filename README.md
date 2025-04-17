@@ -1,5 +1,5 @@
 # linux_dns
-Simple script for fast DNS changes on RHEL-based Linux — — no background services required.
+Simple script for fast DNS changes on RHEL-based Linux — no background services required.
 
 Simply move or copy the files to /usr/bin.
 
