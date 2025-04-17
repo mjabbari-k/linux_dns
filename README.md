@@ -1,10 +1,10 @@
 # linux_dns
-Simple script for fast DNS change on RHEL based Linux No services needed
+Simple script for fast DNS changes on RHEL-based Linux — — no background services required.
 
-Simply move or coppy files to /usr/bin
+Simply move or copy the files to /usr/bin.
 
-Then run commands "dns" or "nodns"
+Run the commands dns or nodns.
 
-Enter the desired DNS number/character
+Enter the desired DNS number or character.
 
-For fast DNS flush and network refresh run "nodns"
+For a quick DNS flush and network refresh, run nodns.
