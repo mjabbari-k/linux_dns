@@ -1,52 +1,57 @@
 #!/bin/bash
+# setdns — set custom IPv4 DNS for the active Ethernet/Wi-Fi (including USB-Ethernet) connection
+
 #DONOT DELETE
-# Check if two DNS arguments are provided
 if [ $# -ne 2 ]; then
     echo "Usage: $0 <DNS1> <DNS2>"
     echo "Example: $0 8.8.8.8 8.8.4.4"
     exit 1
 fi
 
-# Get the DNS servers from the arguments
 DNS1="$1"
 DNS2="$2"
 
-# Check for an active network connection (Wi-Fi or Ethernet)
-CONNECTED_CONNECTION=$(nmcli -t -f NAME,DEVICE,STATE connection show --active | grep -E "wifi|ethernet" | grep -E "connected" | awk -F: '{print $1}' | head -n 1)
+# Try NMCLI first (802-3-ethernet covers USB-Ethernet too)
+CONNECTED_CONNECTION=$(
+  nmcli -t -f NAME,TYPE connection show --active \
+    | grep -E '802-3-ethernet|802-11-wireless' \
+    | cut -d: -f1 \
+    | head -n1
+)
 
-# If no active connection is found, try checking using `ip link` for interfaces with UP state
+# Fallback: look for any UP interface and map it
 if [ -z "$CONNECTED_CONNECTION" ]; then
-    echo "No active network connection found using nmcli, checking with ip link..."
-    # Check if any interface is up and connected
-    CONNECTED_INTERFACE=$(ip link show | grep -E "wlp|eth" | grep "state UP" | awk -F': ' '{print $2}' | head -n 1)
-
-    if [ -z "$CONNECTED_INTERFACE" ]; then
-        echo "No active network connection found (either Wi-Fi or Ethernet)."
-        exit 1
-    else
-        # Automatically detect the active network interface
-		CONNECTED_INTERFACE=$(ip route show default | awk '{print $5}')
-		
-		# Fetch the connection name corresponding to the active interface
-		CONNECTED_CONNECTION=$(nmcli connection show | grep "$CONNECTED_INTERFACE" | awk -F'  +' '{print $1}' | head -n 1)
-
-		# Output the active interface and connection name
-		echo "Active network interface detected: $CONNECTED_INTERFACE"
-		echo "Active connection name: $CONNECTED_CONNECTION"
-    fi
+  echo "No active network connection found via nmcli, trying ip link…"
+  CONNECTED_INTERFACE=$(
+    ip link show \
+      | grep 'state UP' \
+      | grep -E 'wlp|eth|enp|enx' \
+      | awk '{print $2}' \
+      | tr -d ':' \
+      | head -n1
+  )
+  if [ -z "$CONNECTED_INTERFACE" ]; then
+    echo "❌ No UP interface (wlp/eth/enp/enx) found."
+    exit 1
+  fi
+  # Map device → connection name (handles spaces)
+  CONNECTED_CONNECTION=$(
+    nmcli -t -f NAME,DEVICE connection show \
+      | grep ":$CONNECTED_INTERFACE\$" \
+      | cut -d: -f1
+  )
+  if [ -z "$CONNECTED_CONNECTION" ]; then
+    echo "❌ No NMCLI connection found for interface $CONNECTED_INTERFACE."
+    exit 1
+  fi
 fi
 
-# Display the active network connection name
-echo "Active network connection detected: $CONNECTED_CONNECTION"
-
-# Set DNS to the provided values
-echo "Setting DNS to $DNS1 and $DNS2 for connection $CONNECTED_CONNECTION..."
+echo "Active network connection detected: '$CONNECTED_CONNECTION'"
+echo "Setting DNS to $DNS1 and $DNS2 for connection '$CONNECTED_CONNECTION'…"
 nmcli connection modify "$CONNECTED_CONNECTION" ipv4.dns "$DNS1 $DNS2"
 nmcli connection modify "$CONNECTED_CONNECTION" ipv4.ignore-auto-dns yes
 
-# Restart the network connection to apply the DNS changes
-echo "Restarting network connection to apply DNS changes..."
+echo "Restarting connection to apply changes…"
 nmcli connection down "$CONNECTED_CONNECTION" && nmcli connection up "$CONNECTED_CONNECTION"
 
-echo "DNS settings have been updated to $DNS1 and $DNS2 successfully!"
-
+echo "✅ DNS updated to $DNS1, $DNS2 on '$CONNECTED_CONNECTION'."
