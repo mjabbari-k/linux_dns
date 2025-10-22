@@ -1,46 +1,27 @@
 #!/bin/bash
-# nodns — revert to automatic DNS on the active Ethernet/Wi-Fi (including USB-Ethernet) connection
+# nodns - revert to automatic DNS
 
-# Try NMCLI first
-CONNECTED_CONNECTION=$(
-  nmcli -t -f NAME,TYPE connection show --active \
-    | grep -E '802-3-ethernet|802-11-wireless' \
-    | cut -d: -f1 \
-    | head -n1
-)
+if command -v nmcli >/dev/null 2>&1; then
+    CONNECTED_CONNECTION=$(nmcli -t -f NAME connection show --active | head -n 1)
+    if [ -z "$CONNECTED_CONNECTION" ]; then
+        IFACE=$(ip route show default | awk '{print $5}' | head -n 1)
+        CONNECTED_CONNECTION=$(nmcli -t -f NAME,DEVICE connection show | grep ":$IFACE" | awk -F: '{print $1}' | head -n 1)
+    fi
 
-# Fallback via ip link
-if [ -z "$CONNECTED_CONNECTION" ]; then
-  echo "No active connection via nmcli, checking ip link…"
-  CONNECTED_INTERFACE=$(
-    ip link show \
-      | grep 'state UP' \
-      | grep -E 'wlp|eth|enp|enx' \
-      | awk '{print $2}' \
-      | tr -d ':' \
-      | head -n1
-  )
-  if [ -z "$CONNECTED_INTERFACE" ]; then
-    echo "❌ No UP interface (wlp/eth/enp/enx) found."
-    exit 1
-  fi
-  CONNECTED_CONNECTION=$(
-    nmcli -t -f NAME,DEVICE connection show \
-      | grep ":$CONNECTED_INTERFACE\$" \
-      | cut -d: -f1
-  )
-  if [ -z "$CONNECTED_CONNECTION" ]; then
-    echo "❌ No NMCLI connection found for interface $CONNECTED_INTERFACE."
-    exit 1
-  fi
+    if [ -n "$CONNECTED_CONNECTION" ]; then
+        nmcli connection modify "$CONNECTED_CONNECTION" ipv4.dns ""
+        nmcli connection modify "$CONNECTED_CONNECTION" ipv4.ignore-auto-dns no
+        nmcli connection down "$CONNECTED_CONNECTION" && nmcli connection up "$CONNECTED_CONNECTION"
+        echo "DNS reverted to automatic for $CONNECTED_CONNECTION"
+        exit 0
+    fi
 fi
 
-echo "Active network connection detected: '$CONNECTED_CONNECTION'"
-echo "Reverting DNS to automatic for '$CONNECTED_CONNECTION'…"
-nmcli connection modify "$CONNECTED_CONNECTION" ipv4.dns ""
-nmcli connection modify "$CONNECTED_CONNECTION" ipv4.ignore-auto-dns no
-
-echo "Restarting connection to apply changes…"
-nmcli connection down "$CONNECTED_CONNECTION" && nmcli connection up "$CONNECTED_CONNECTION"
-
-echo "✅ DNS settings reverted to automatic on '$CONNECTED_CONNECTION'."
+# Fallback: restore backup resolv.conf if available
+LATEST_BACKUP=$(ls -t /etc/resolv.conf.backup.* 2>/dev/null | head -n 1)
+if [ -n "$LATEST_BACKUP" ]; then
+    cp "$LATEST_BACKUP" /etc/resolv.conf
+    echo "Restored /etc/resolv.conf from $LATEST_BACKUP"
+else
+    echo "No backup resolv.conf found, you may need to manually restore DNS"
+fi
