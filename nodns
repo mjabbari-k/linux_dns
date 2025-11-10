@@ -1,27 +1,35 @@
 #!/bin/bash
-# nodns - revert to automatic DNS
+# nodns - revert DNS to automatic using NetworkManager
 
-if command -v nmcli >/dev/null 2>&1; then
-    CONNECTED_CONNECTION=$(nmcli -t -f NAME connection show --active | head -n 1)
-    if [ -z "$CONNECTED_CONNECTION" ]; then
-        IFACE=$(ip route show default | awk '{print $5}' | head -n 1)
-        CONNECTED_CONNECTION=$(nmcli -t -f NAME,DEVICE connection show | grep ":$IFACE" | awk -F: '{print $1}' | head -n 1)
-    fi
+set -euo pipefail
 
-    if [ -n "$CONNECTED_CONNECTION" ]; then
-        nmcli connection modify "$CONNECTED_CONNECTION" ipv4.dns ""
-        nmcli connection modify "$CONNECTED_CONNECTION" ipv4.ignore-auto-dns no
-        nmcli connection down "$CONNECTED_CONNECTION" && nmcli connection up "$CONNECTED_CONNECTION"
-        echo "DNS reverted to automatic for $CONNECTED_CONNECTION"
-        exit 0
-    fi
+# Detect active interface
+IFACE=$(ip route show default | awk '{print $5}' | head -n 1)
+
+# Find connection name reliably
+CONNECTED_CONNECTION=$(nmcli -t -f NAME,DEVICE connection show --active \
+    | awk -F: -v iface="$IFACE" '$2==iface {print $1}' | head -n 1)
+
+if [ -z "$CONNECTED_CONNECTION" ]; then
+    CONNECTED_CONNECTION=$(nmcli -t -f NAME,DEVICE connection show \
+        | awk -F: -v iface="$IFACE" '$2==iface {print $1}' | head -n 1)
 fi
 
-# Fallback: restore backup resolv.conf if available
-LATEST_BACKUP=$(ls -t /etc/resolv.conf.backup.* 2>/dev/null | head -n 1)
-if [ -n "$LATEST_BACKUP" ]; then
-    cp "$LATEST_BACKUP" /etc/resolv.conf
-    echo "Restored /etc/resolv.conf from $LATEST_BACKUP"
-else
-    echo "No backup resolv.conf found, you may need to manually restore DNS"
+if [ -z "$CONNECTED_CONNECTION" ]; then
+    echo "ERROR: could not find active NetworkManager connection."
+    exit 1
 fi
+
+echo "Detected active connection: \"$CONNECTED_CONNECTION\""
+echo "Interface: $IFACE"
+echo "Resetting DNS to automatic..."
+
+# Correct reset sequence for your NM version
+nmcli connection modify "$CONNECTED_CONNECTION" ipv4.ignore-auto-dns no
+nmcli connection modify "$CONNECTED_CONNECTION" ipv4.dns ""
+nmcli connection modify "$CONNECTED_CONNECTION" ipv4.dns-search ""
+
+# Apply changes using same logic as your working setdns
+nmcli connection down "$CONNECTED_CONNECTION" && nmcli connection up "$CONNECTED_CONNECTION"
+
+echo "✅ DNS reverted to automatic for \"$CONNECTED_CONNECTION\""
