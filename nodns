@@ -1,35 +1,52 @@
-#!/bin/bash
-# nodns - revert DNS to automatic using NetworkManager
+#!/bin/sh
+# nodns.sh - disable DNS on the active NetworkManager connection (or fallback to /etc/resolv.conf)
+set -e
 
-set -euo pipefail
+# Find default interface
+DEV=$(ip route get 1.1.1.1 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
+[ -n "$DEV" ] || { echo "Could not detect default interface."; exit 1; }
 
-# Detect active interface
-IFACE=$(ip route show default | awk '{print $5}' | head -n 1)
+# Find active connection bound to device
+CONN=$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="$DEV" '$2==dev{print $1; exit}')
 
-# Find connection name reliably
-CONNECTED_CONNECTION=$(nmcli -t -f NAME,DEVICE connection show --active \
-    | awk -F: -v iface="$IFACE" '$2==iface {print $1}' | head -n 1)
-
-if [ -z "$CONNECTED_CONNECTION" ]; then
-    CONNECTED_CONNECTION=$(nmcli -t -f NAME,DEVICE connection show \
-        | awk -F: -v iface="$IFACE" '$2==iface {print $1}' | head -n 1)
+if [ -z "$CONN" ]; then
+  # try any active connection
+  CONN=$(nmcli -t -f NAME connection show --active | head -n1)
 fi
 
-if [ -z "$CONNECTED_CONNECTION" ]; then
-    echo "ERROR: could not find active NetworkManager connection."
-    exit 1
+if [ -z "$CONN" ]; then
+  echo "No NetworkManager connection found. Will try to modify /etc/resolv.conf directly."
+  if [ -w /etc/resolv.conf ]; then
+    printf "# nodns: cleared by script\n" > /etc/resolv.conf
+    echo "Wrote empty resolv.conf"
+    exit 0
+  else
+    echo "No permission to write /etc/resolv.conf. Run as root or with sudo."
+    exit 2
+  fi
 fi
 
-echo "Detected active connection: \"$CONNECTED_CONNECTION\""
-echo "Interface: $IFACE"
-echo "Resetting DNS to automatic..."
+# Detect if connection is a hotspot (AP mode)
+APMODE=$(nmcli -g 802-11-wireless.mode connection show "$CONN" 2>/dev/null || true)
+if [ "$APMODE" = "ap" ]; then
+  echo "Connection '$CONN' appears to be a hotspot (802-11-wireless.mode=ap)."
+  echo "Refusing to modify hotspot parameters. Falling back to /etc/resolv.conf."
+  if [ -w /etc/resolv.conf ]; then
+    printf "# nodns fallback: cleared by script because '%s' is AP\n" "$CONN" > /etc/resolv.conf
+    echo "Wrote empty resolv.conf"
+    exit 0
+  else
+    echo "No permission to write /etc/resolv.conf. Run as root or with sudo."
+    exit 2
+  fi
+fi
 
-# Correct reset sequence for your NM version
-nmcli connection modify "$CONNECTED_CONNECTION" ipv4.ignore-auto-dns no
-nmcli connection modify "$CONNECTED_CONNECTION" ipv4.dns ""
-nmcli connection modify "$CONNECTED_CONNECTION" ipv4.dns-search ""
-
-# Apply changes using same logic as your working setdns
-nmcli connection down "$CONNECTED_CONNECTION" && nmcli connection up "$CONNECTED_CONNECTION"
-
-echo "✅ DNS reverted to automatic for \"$CONNECTED_CONNECTION\""
+# Only modify DNS keys; do not change addresses or method.
+echo "Modifying DNS for connection '$CONN' on device '$DEV'..."
+nmcli connection modify "$CONN" ipv4.dns "" ipv4.ignore-auto-dns yes || {
+  echo "Failed to modify NetworkManager connection. You may need privileges (sudo)."
+  exit 3
+}
+# Reactivate connection
+nmcli connection up "$CONN" >/dev/null 2>&1 || echo "Warning: bringing connection up failed; NetworkManager may apply changes later."
+echo "DNS disabled on connection '$CONN'."
