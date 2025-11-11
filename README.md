@@ -1,108 +1,175 @@
-# DNS Switcher for Rocky Linux 9.5
+# DNS Selector Script — Installation & Usage Guide
 
-A set of simple Bash scripts to switch DNS resolvers on active Ethernet (including USB-Ethernet) and Wi-Fi connections using `nmcli` and `ip link`. No background services or daemons are required—just standard NetworkManager and built-in Linux tools.
+This script allows you to quickly switch between predefined DNS resolver profiles via a simple menu interface.  
+It also includes safety logic preventing NetworkManager from modifying hotspot/AP mode connections.
 
-## Features
+---
 
-- **Quick DNS switching**: Choose from a menu of popular public DNS providers (Google, Cloudflare, Quad9, etc.).
-- **Universal interface detection**: Works on wired, USB-Ethernet, and wireless (802.3 & 802.11) without manual interface names.
-- **Automatic revert**: Restore automatic (DHCP) DNS settings with a single command.
-- **Handles spaces in connection names**: Full support for NetworkManager profiles with spaces.
-- **No extra services**: Relies only on `nmcli`, `ip link`, `awk`, and `grep`, so there’s nothing to install or keep running in the background.
+## ✅ Features
 
-## Repository Structure
+- Interactive menu-based DNS selector  
+- 17 preset DNS profiles (Google, Cloudflare, Quad9, Yandex, etc.)  
+- Fallback handling for systems where a NetworkManager connection cannot be modified  
+- Hotspot/AP mode detection (prevents modifying hotspot DNS)  
+- Automatic DNS reset option  
 
-```text
-dns/              # Interactive menu script
-├── dns           # Main menu: pick a DNS provider or revert to automatic
-├── setdns        # Script to apply custom DNS servers
-└── nodns         # Script to revert to automatic DNS
+---
+
+## ✅ Requirements
+
+- A Linux system with `bash` or `sh`
+- `nmcli` (NetworkManager CLI) installed  
+- Superuser privileges (`sudo`) for changing system DNS  
+- A non-hotspot network connection for applying DNS to NetworkManager profiles  
+
+> ✅ Works on:  
+> - Ubuntu / Debian / Pop!_OS / Mint  
+> - Fedora / RHEL / Rocky Linux  
+> - Arch / Manjaro / EndeavourOS  
+> - openSUSE  
+> - Any distro using NetworkManager  
+
+> ⚠️ Notes:  
+> - If a distro does **not use NetworkManager** (e.g., Alpine, Void Linux with runit, older CentOS minimal images), DNS will be written directly to `/etc/resolv.conf`.  
+
+---
+
+## ✅ Installation
+
+### 1. Download the script
+
+Place `dns.sh` into `/usr/local/bin`:
+
+```sh
+sudo mv dns.sh /usr/local/bin/dns
 ```
 
-## Prerequisites
+> Rename to `dns` for easier typing.
 
-- Rocky Linux 9.5 (or any RHEL-9 based distro with NetworkManager)
-- `nmcli` (NetworkManager CLI)
-- `bash`, `awk`, `grep`, `ip` (all standard)
-- **No background daemons** beyond the default NetworkManager.
+### 2. Make it executable
 
-## Installation
-
-1. Clone this repository:
-
-   ```bash
-   git clone https://github.com/yourusername/rocky-dns-switcher.git
-   cd rocky-dns-switcher
-   ```
-
-2. Make scripts executable:
-
-   ```bash
-   chmod +x dns setdns nodns
-   ```
-
-3. (Optional) Move them into your PATH:
-
-   ```bash
-   sudo mv dns setdns nodns /usr/local/bin/
-   ```
-
-## Usage
-
-### Interactive Menu (`dns`)
-
-```bash
-./dns
+```sh
+sudo chmod +x /usr/local/bin/dns
 ```
 
-1. Select a DNS provider from the list (e.g., `1` for Google, `2` for Cloudflare`).  
-2. The script calls `setdns <DNS1> <DNS2>` under the hood.  
-3. To revert, choose `e` (Obtain DNS server automatically), which invokes `nodns`.
+---
 
-### Direct Commands
+## ✅ (Optional) Install companion scripts
 
-- **Set custom DNS**:
+If your system uses the original structure:
 
-  ```bash
-  setdns 8.8.8.8 8.8.4.4
-  ```
+```sh
+sudo mv setdns.sh /usr/local/bin/setdns
+sudo mv nodns.sh /usr/local/bin/nodns
+sudo chmod +x /usr/local/bin/setdns
+sudo chmod +x /usr/local/bin/nodns
+```
 
-- **Revert to automatic DNS**:
+---
 
-  ```bash
-  nodns
-  ```
+## ✅ Running the script
 
-## How It Works
+Run:
 
-1. **Detect active connection**:
-   - First tries:
-     ```bash
-     nmcli -t -f NAME,TYPE connection show --active |
-       grep -E '802-3-ethernet|802-11-wireless' |
-       cut -d: -f1
-     ```
-   - If none found, falls back to:
-     ```bash
-     ip link show | grep 'state UP' | grep -E 'wlp|eth|enp|enx' | awk '{print $2}'
-     ```
-   - Maps the interface back to a connection name via NMCLI, preserving names with spaces.
+```sh
+dns
+```
 
-2. **Apply DNS settings** using `nmcli connection modify`:
-   - `ipv4.dns "$DNS1 $DNS2"`
-   - `ipv4.ignore-auto-dns yes` (to force custom DNS)
+You will see something like:
 
-3. **Revert DNS** by clearing `ipv4.dns` and restoring `ipv4.ignore-auto-dns no`.
+```
+                        DNS Resolver Setup
+-----------------------------------------------------------
+1) Google        2) Cloudflare     3) Shecan      4) Electro
+5) Spotify_1    6) Spotify_2      7) Spotify_3   8) 403
+9) Alternate    10) Comodo        11) DNS.Watch  12) Level3
+13) OpenDNS     14) OpenNIC       15) Quad9      16) Verisign
+17) Yandex
 
-4. **Restart** the connection:
-   ```bash
-   nmcli connection down "$CONN" && nmcli connection up "$CONN"
-   ```
+e) Revert to automatic DNS
+```
 
-## Contributing
+Choose a number and press Enter.
 
-Feel free to open issues or pull requests to add more providers, support IPv6, or improve interface detection.
+---
 
-## License
+## ✅ How DNS is Applied
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+### If NetworkManager is active:
+- Detects the current default route’s interface  
+- Finds the connection using that interface  
+- Applies DNS safely using:  
+
+```
+nmcli connection modify <CONNECTION> ipv4.dns "<DNS1,DNS2>" ipv4.ignore-auto-dns yes
+nmcli connection up <CONNECTION>
+```
+
+### If the active connection is a hotspot/AP:
+- The script **will not apply DNS to it**
+- Falls back to writing `/etc/resolv.conf`
+
+### If NetworkManager is missing:
+- Directly writes to `/etc/resolv.conf`
+
+---
+
+## ✅ Resetting to Automatic DNS
+
+Choose option:
+
+```
+e
+```
+
+This resets the active NetworkManager connection (unless it’s a hotspot).  
+If hotspot or no NM connection exists, it clears `/etc/resolv.conf`.
+
+---
+
+## ✅ Uninstallation
+
+Simply remove the script:
+
+```sh
+sudo rm /usr/local/bin/dns
+sudo rm /usr/local/bin/setdns
+sudo rm /usr/local/bin/nodns
+```
+
+---
+
+## ✅ Troubleshooting
+
+### “No active NetworkManager connection found”
+- Your system may be using **systemd-resolved**, **dhcpcd**, or another network manager  
+
+### “Permission denied writing /etc/resolv.conf”
+- Run with:
+
+```sh
+sudo dns
+```
+
+### Hotspot DNS not changing
+✅ This is intentional — the script protects hotspot connections.
+
+---
+
+## ✅ Compatibility Notes
+
+| Component | Works? | Notes |
+|----------|--------|-------|
+| NetworkManager | ✅ | Full functionality |
+| systemd-resolved | ✅ | DNS overrides resolv.conf |
+| dhcpcd | ⚠️ | Uses resolv.conf fallback mode |
+| Hotspot/AP-mode | ✅ | Script avoids modifying settings |
+| All major distros | ✅ | As long as `nmcli` is present |
+
+---
+
+If you want, I can also generate:
+✅ a `.deb` package  
+✅ an `.rpm` installer  
+✅ auto-setup script  
+✅ systemd unit for periodic DNS refresh  
