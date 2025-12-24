@@ -1,76 +1,44 @@
 #!/bin/sh
-# setdns.sh - set DNS servers on the active NetworkManager connection (safe: will not modify hotspot/AP connections)
+# setdns - set DNS servers on the active NetworkManager connection.
+# Safe for connection names containing spaces and ':' (nmcli -t escaping handled).
 set -e
 
-usage() {
-  cat <<EOF
-Usage: $0 <dns1[,dns2,...]>
-Example: $0 1.1.1.1,8.8.8.8
-If you pass '-' as the DNS list, the script will clear ipv4.dns and set ignore-auto-dns to no (use automatic).
-EOF
-  exit 1
+DNS_CSV="$1"  # e.g. "8.8.8.8,8.8.4.4"
+[ -n "$DNS_CSV" ] || { echo "Usage: setdns \"DNS1,DNS2,...\""; exit 2; }
+
+detect_dev() {
+  ip route get 1.1.1.1 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}'
 }
 
-[ $# -eq 1 ] || usage
-DNS_LIST="$1"
+unescape_nmcli() {
+  # nmcli -t escapes ':' as '\:'
+  # convert '\:' -> ':'
+  printf '%s' "$1" | sed 's/\\:/:/g'
+}
 
-# Find default interface
-DEV=$(ip route get 1.1.1.1 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
+DEV="$(detect_dev)"
 [ -n "$DEV" ] || { echo "Could not detect default interface."; exit 1; }
 
-# Find active connection bound to device
-CONN=$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="$DEV" '$2==dev{print $1; exit}')
+CONN_RAW="$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="$DEV" '$2==dev{print $1; exit}')"
+CONN="$(unescape_nmcli "$CONN_RAW")"
 
 if [ -z "$CONN" ]; then
-  # try any active connection
-  CONN=$(nmcli -t -f NAME connection show --active | head -n1)
+  CONN_RAW="$(nmcli -t -f NAME connection show --active | head -n1)"
+  CONN="$(unescape_nmcli "$CONN_RAW")"
 fi
 
-if [ -z "$CONN" ]; then
-  echo "No NetworkManager connection found. Will try to modify /etc/resolv.conf directly."
-  if [ -w /etc/resolv.conf ]; then
-    if [ "$DNS_LIST" = "-" ]; then
-      printf "# setdns: revert to automatic (no DNS lines)\n" > /etc/resolv.conf
-      echo "Cleared /etc/resolv.conf"
-    else
-      awk -v dns="$DNS_LIST" 'BEGIN{n=split(dns,a,","); for(i=1;i<=n;i++) print "nameserver " a[i]}' > /etc/resolv.conf
-      echo "Wrote DNS to /etc/resolv.conf"
-    fi
-    exit 0
-  else
-    echo "No permission to write /etc/resolv.conf. Run as root or with sudo."
-    exit 2
-  fi
+[ -n "$CONN" ] || { echo "No active NetworkManager connection found."; exit 1; }
+
+# Do not touch hotspot / AP-mode connections
+TYPE="$(nmcli -g connection.type connection show "$CONN" 2>/dev/null || true)"
+MODE="$(nmcli -g 802-11-wireless.mode connection show "$CONN" 2>/dev/null || true)"
+if [ "$TYPE" = "wifi" ] && [ "$MODE" = "ap" ]; then
+  echo "Active connection '$CONN' appears to be Wi‑Fi AP/hotspot mode. Skipping DNS changes."
+  exit 0
 fi
 
-# Detect if connection is a hotspot (AP mode)
-APMODE=$(nmcli -g 802-11-wireless.mode connection show "$CONN" 2>/dev/null || true)
-if [ "$APMODE" = "ap" ]; then
-  echo "Connection '$CONN' appears to be a hotspot (802-11-wireless.mode=ap)."
-  echo "Refusing to modify hotspot parameters. Falling back to /etc/resolv.conf."
-  if [ -w /etc/resolv.conf ]; then
-    if [ "$DNS_LIST" = "-" ]; then
-      printf "# setdns fallback: revert to automatic (no DNS lines)\n" > /etc/resolv.conf
-      echo "Cleared /etc/resolv.conf"
-    else
-      awk -v dns="$DNS_LIST" 'BEGIN{n=split(dns,a,","); for(i=1;i<=n;i++) print "nameserver " a[i]}' > /etc/resolv.conf
-      echo "Wrote DNS to /etc/resolv.conf"
-    fi
-    exit 0
-  else
-    echo "No permission to write /etc/resolv.conf. Run as root or with sudo."
-    exit 2
-  fi
-fi
+nmcli connection modify "$CONN" ipv4.ignore-auto-dns yes
+nmcli connection modify "$CONN" ipv4.dns "$DNS_CSV"
+nmcli connection up "$CONN" >/dev/null 2>&1 || true
 
-# Modify only DNS keys
-if [ "$DNS_LIST" = "-" ]; then
-  echo "Clearing ipv4.dns and enabling automatic DNS (ignore-auto-dns no) on '$CONN'..."
-  nmcli connection modify "$CONN" ipv4.dns "" ipv4.ignore-auto-dns no || { echo "Failed to modify connection (need privileges)"; exit 3; }
-else
-  echo "Setting ipv4.dns='$DNS_LIST' and ipv4.ignore-auto-dns=yes on '$CONN'..."
-  nmcli connection modify "$CONN" ipv4.dns "$DNS_LIST" ipv4.ignore-auto-dns yes || { echo "Failed to modify connection (need privileges)"; exit 3; }
-fi
-
-nmcli connection up "$CONN" >/dev/null 2>&1 || echo "Warning: bringing connection up failed; NetworkManager may apply changes later."
-echo "Done."
+echo "DNS set for connection: $CONN -> $DNS_CSV"
