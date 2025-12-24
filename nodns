@@ -1,52 +1,38 @@
 #!/bin/sh
-# nodns.sh - disable DNS on the active NetworkManager connection (or fallback to /etc/resolv.conf)
+# nodns - revert DNS settings on the active NetworkManager connection.
+# Safe for connection names containing spaces and ':' (nmcli -t escaping handled).
 set -e
 
-# Find default interface
-DEV=$(ip route get 1.1.1.1 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
+detect_dev() {
+  ip route get 1.1.1.1 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}'
+}
+
+unescape_nmcli() {
+  printf '%s' "$1" | sed 's/\\:/:/g'
+}
+
+DEV="$(detect_dev)"
 [ -n "$DEV" ] || { echo "Could not detect default interface."; exit 1; }
 
-# Find active connection bound to device
-CONN=$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="$DEV" '$2==dev{print $1; exit}')
+CONN_RAW="$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="$DEV" '$2==dev{print $1; exit}')"
+CONN="$(unescape_nmcli "$CONN_RAW")"
 
 if [ -z "$CONN" ]; then
-  # try any active connection
-  CONN=$(nmcli -t -f NAME connection show --active | head -n1)
+  CONN_RAW="$(nmcli -t -f NAME connection show --active | head -n1)"
+  CONN="$(unescape_nmcli "$CONN_RAW")"
 fi
 
-if [ -z "$CONN" ]; then
-  echo "No NetworkManager connection found. Will try to modify /etc/resolv.conf directly."
-  if [ -w /etc/resolv.conf ]; then
-    printf "# nodns: cleared by script\n" > /etc/resolv.conf
-    echo "Wrote empty resolv.conf"
-    exit 0
-  else
-    echo "No permission to write /etc/resolv.conf. Run as root or with sudo."
-    exit 2
-  fi
+[ -n "$CONN" ] || { echo "No active NetworkManager connection found."; exit 1; }
+
+TYPE="$(nmcli -g connection.type connection show "$CONN" 2>/dev/null || true)"
+MODE="$(nmcli -g 802-11-wireless.mode connection show "$CONN" 2>/dev/null || true)"
+if [ "$TYPE" = "wifi" ] && [ "$MODE" = "ap" ]; then
+  echo "Active connection '$CONN' appears to be Wi‑Fi AP/hotspot mode. Skipping DNS changes."
+  exit 0
 fi
 
-# Detect if connection is a hotspot (AP mode)
-APMODE=$(nmcli -g 802-11-wireless.mode connection show "$CONN" 2>/dev/null || true)
-if [ "$APMODE" = "ap" ]; then
-  echo "Connection '$CONN' appears to be a hotspot (802-11-wireless.mode=ap)."
-  echo "Refusing to modify hotspot parameters. Falling back to /etc/resolv.conf."
-  if [ -w /etc/resolv.conf ]; then
-    printf "# nodns fallback: cleared by script because '%s' is AP\n" "$CONN" > /etc/resolv.conf
-    echo "Wrote empty resolv.conf"
-    exit 0
-  else
-    echo "No permission to write /etc/resolv.conf. Run as root or with sudo."
-    exit 2
-  fi
-fi
+nmcli connection modify "$CONN" ipv4.ignore-auto-dns no
+nmcli connection modify "$CONN" -ipv4.dns
+nmcli connection up "$CONN" >/dev/null 2>&1 || true
 
-# Only modify DNS keys; do not change addresses or method.
-echo "Modifying DNS for connection '$CONN' on device '$DEV'..."
-nmcli connection modify "$CONN" ipv4.dns "" ipv4.ignore-auto-dns yes || {
-  echo "Failed to modify NetworkManager connection. You may need privileges (sudo)."
-  exit 3
-}
-# Reactivate connection
-nmcli connection up "$CONN" >/dev/null 2>&1 || echo "Warning: bringing connection up failed; NetworkManager may apply changes later."
-echo "DNS disabled on connection '$CONN'."
+echo "DNS reset to automatic for connection: $CONN"
