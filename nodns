@@ -1,6 +1,6 @@
 #!/bin/sh
-# nodns - revert DNS settings on the active NetworkManager connection.
-# Safe for connection names containing spaces and ':' (nmcli -t escaping handled).
+# nodns - reset DNS to automatic for the active NetworkManager connection.
+# Fast and non-interactive.
 set -e
 
 detect_dev() {
@@ -8,31 +8,49 @@ detect_dev() {
 }
 
 unescape_nmcli() {
+  # nmcli -t escapes ':' as '\:'
   printf '%s' "$1" | sed 's/\\:/:/g'
 }
 
-DEV="$(detect_dev)"
-[ -n "$DEV" ] || { echo "Could not detect default interface."; exit 1; }
+get_active_conn() {
+  DEV="$(detect_dev)"
+  [ -n "$DEV" ] || return 1
 
-CONN_RAW="$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="$DEV" '$2==dev{print $1; exit}')"
-CONN="$(unescape_nmcli "$CONN_RAW")"
-
-if [ -z "$CONN" ]; then
-  CONN_RAW="$(nmcli -t -f NAME connection show --active | head -n1)"
+  CONN_RAW="$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="$DEV" '$2==dev{print $1; exit}')"
   CONN="$(unescape_nmcli "$CONN_RAW")"
-fi
 
-[ -n "$CONN" ] || { echo "No active NetworkManager connection found."; exit 1; }
+  if [ -z "$CONN" ]; then
+    CONN_RAW="$(nmcli -t -f NAME connection show --active | head -n1)"
+    CONN="$(unescape_nmcli "$CONN_RAW")"
+  fi
 
-TYPE="$(nmcli -g connection.type connection show "$CONN" 2>/dev/null || true)"
-MODE="$(nmcli -g 802-11-wireless.mode connection show "$CONN" 2>/dev/null || true)"
-if [ "$TYPE" = "wifi" ] && [ "$MODE" = "ap" ]; then
-  echo "Active connection '$CONN' appears to be Wi‑Fi AP/hotspot mode. Skipping DNS changes."
+  [ -n "$CONN" ] || return 1
+  printf '%s' "$CONN"
+  return 0
+}
+
+is_hotspot_ap() {
+  CONN="$1"
+  TYPE="$(nmcli -g connection.type connection show "$CONN" 2>/dev/null || true)"
+  MODE="$(nmcli -g 802-11-wireless.mode connection show "$CONN" 2>/dev/null || true)"
+  [ "$TYPE" = "wifi" ] && [ "$MODE" = "ap" ]
+}
+
+CONN="$(get_active_conn)" || { echo "Error: No active NetworkManager connection found."; exit 1; }
+
+if is_hotspot_ap "$CONN"; then
+  echo "Info: Active connection '$CONN' appears to be Wi‑Fi AP/hotspot mode. Skipping DNS reset."
   exit 0
 fi
 
-nmcli connection modify "$CONN" ipv4.ignore-auto-dns no
-nmcli connection modify "$CONN" -ipv4.dns
-nmcli connection up "$CONN" >/dev/null 2>&1 || true
-
-echo "DNS reset to automatic for connection: $CONN"
+# Reset DNS to automatic:
+# - allow auto DNS again
+# - clear any manually configured IPv4 DNS (set to empty string)
+if nmcli connection modify "$CONN" ipv4.ignore-auto-dns no   && nmcli connection modify "$CONN" ipv4.dns ""; then
+  nmcli connection up "$CONN" >/dev/null 2>&1 || true
+  echo "OK: DNS reset to automatic for '$CONN'"
+  exit 0
+else
+  echo "Error: Failed to reset DNS for '$CONN'"
+  exit 1
+fi
