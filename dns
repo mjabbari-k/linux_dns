@@ -15,10 +15,10 @@ reset_dns() { "$NODNS"; }
 
 show_menu() {
   echo "============================================================"
-  echo "|			DNS Selector			   |"
+  echo "|			                  DNS Selector			                 |"
   echo "============================================================"
-  echo "  1) Google DNS 	2) Cloudflare 		3) Yandex"
-  echo "  4) Shecan             5) Electro		6) 403"
+  echo "  1) Google DNS 	      2) Cloudflare 		      3) Yandex"
+  echo "  4) Shecan             5) Electro		          6) 403"
   echo "  7) OpenDNS            8) CleanBrowsing (Sec)  9) Quad9"
   echo "  10) Add your dns here by editing the dns script"
   echo "  e) Reset to automatic DNS"
