@@ -1,136 +1,66 @@
 #!/bin/sh
-# dns.sh - interactive DNS selector using the user's profiles (hotspot-protected)
+# dns - interactive DNS selector.
+# Delegates all NetworkManager changes to setdns/nodns to keep logic centralized.
 
-SETDNS="/usr/local/bin/setdns.sh"   # fallback path used by original scripts
-NODNS="/usr/local/bin/nodns.sh"     # fallback path used by original scripts
+set -e
+
+SETDNS="${SETDNS:-/usr/local/bin/setdns}"
+NODNS="${NODNS:-/usr/local/bin/nodns}"
+
+if [ ! -x "$SETDNS" ]; then
+  echo "Error: setdns not found or not executable at: $SETDNS"
+  echo "Install it or set SETDNS=/path/to/setdns"
+  exit 1
+fi
+
+if [ ! -x "$NODNS" ]; then
+  echo "Error: nodns not found or not executable at: $NODNS"
+  echo "Install it or set NODNS=/path/to/nodns"
+  exit 1
+fi
 
 apply_dns() {
-  DNS_CSV="$1"  # ex: "8.8.8.8,8.8.4.4"
-
-  # find default interface
-  DEV=$(ip route get 1.1.1.1 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
-  [ -n "$DEV" ] || { echo "Could not detect default interface."; return 2; }
-
-  # find connection bound to interface
-  CONN=$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="$DEV" '$2==dev{print $1; exit}')
-  if [ -z "$CONN" ]; then
-    CONN=$(nmcli -t -f NAME connection show --active | head -n1)
-  fi
-
-  if [ -z "$CONN" ]; then
-    echo "No active NetworkManager connection found. Falling back to /etc/resolv.conf (requires root)"
-    if [ ! -w /etc/resolv.conf ]; then
-      echo "No permission to write /etc/resolv.conf. Run as root or move setdns/nodns to /usr/local/bin and use sudo."
-      return 3
-    fi
-    awk -v dns="$DNS_CSV" 'BEGIN{n=split(dns,a,","); for(i=1;i<=n;i++) print "nameserver " a[i]}' > /etc/resolv.conf
-    echo "Wrote /etc/resolv.conf"
-    return 0
-  fi
-
-  # check if connection is hotspot (ap)
-  MODE=$(nmcli -g 802-11-wireless.mode connection show "$CONN" 2>/dev/null || true)
-  if [ "$MODE" = "ap" ]; then
-    echo "Detected hotspot connection '$CONN' (mode=ap). Will NOT modify hotspot."
-    echo "Falling back to /etc/resolv.conf (requires root)"
-    if [ ! -w /etc/resolv.conf ]; then
-      echo "No permission to write /etc/resolv.conf. Run as root."
-      return 3
-    fi
-    awk -v dns="$DNS_CSV" 'BEGIN{n=split(dns,a,","); for(i=1;i<=n;i++) print "nameserver " a[i]}' > /etc/resolv.conf
-    echo "Wrote /etc/resolv.conf"
-    return 0
-  fi
-
-  # Modify only DNS keys on the connection
-  echo "Setting IPv4 DNS for connection '$CONN' to: $DNS_CSV"
-  nmcli connection modify "$CONN" ipv4.dns "$DNS_CSV" ipv4.ignore-auto-dns yes || {
-    echo "Failed to modify NetworkManager connection. You may need to run with sudo or place setdns in /usr/local/bin."
-    return 4
-  }
-  nmcli connection up "$CONN" >/dev/null 2>&1 || true
-  echo "Done."
-  return 0
+  "$SETDNS" "$1"
 }
 
 reset_dns() {
-  # Reset to automatic DNS (clear ipv4.dns, set ignore-auto-dns no) for the active connection (but don't touch hotspot)
-  DEV=$(ip route get 1.1.1.1 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
-  [ -n "$DEV" ] || { echo "Could not detect default interface."; return 2; }
-  CONN=$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="$DEV" '$2==dev{print $1; exit}')
-  if [ -z "$CONN" ]; then
-    CONN=$(nmcli -t -f NAME connection show --active | head -n1)
-  fi
-  if [ -z "$CONN" ]; then
-    echo "No active NetworkManager connection found. Clearing /etc/resolv.conf instead (requires root)"
-    if [ ! -w /etc/resolv.conf ]; then
-      echo "No permission to write /etc/resolv.conf. Run as root."
-      return 3
-    fi
-    printf "" > /etc/resolv.conf
-    echo "Cleared /etc/resolv.conf"
-    return 0
-  fi
-
-  MODE=$(nmcli -g 802-11-wireless.mode connection show "$CONN" 2>/dev/null || true)
-  if [ "$MODE" = "ap" ]; then
-    echo "Detected hotspot connection '$CONN' (mode=ap). Will NOT modify hotspot."
-    echo "Clearing /etc/resolv.conf instead (requires root)"
-    if [ ! -w /etc/resolv.conf ]; then
-      echo "No permission to write /etc/resolv.conf. Run as root."
-      return 3
-    fi
-    printf "" > /etc/resolv.conf
-    echo "Cleared /etc/resolv.conf"
-    return 0
-  fi
-
-  echo "Resetting connection '$CONN' to automatic DNS..."
-  nmcli connection modify "$CONN" ipv4.dns "" ipv4.ignore-auto-dns no || {
-    echo "Failed to modify connection. You may need sudo."
-    return 4
-  }
-  nmcli connection up "$CONN" >/dev/null 2>&1 || true
-  echo "Done."
-  return 0
+  "$NODNS"
 }
 
-# MAIN MENU (exact layout/order from user's snippet)
 while true; do
-    clear
-    echo
-    echo -e "\t\t\t DNS Resolver Setup"
-    echo "-----------------------------------------------------------"
-    echo "1) Google        2) Cloudflare     3) Shecan      4) Electro"
-    echo "5) Spotify_1    6) Spotify_2      7) Spotify_3   8) 403"
-    echo "9) Alternate    10) Comodo        11) DNS.Watch  12) Level3"
-    echo "13) OpenDNS     14) OpenNIC       15) Quad9      16) Verisign"
-    echo "17) Yandex"
-    echo
-    echo "e) Revert to automatic DNS"
-    echo
-    printf "Choose option: "
-    read -r option
+  clear
+  echo "==============================="
+  echo " DNS Selector"
+  echo "==============================="
+  echo ""
+  echo "  1) Google DNS            8.8.8.8,8.8.4.4"
+  echo "  2) Cloudflare            1.1.1.1,1.0.0.1"
+  echo "  3) Quad9                 9.9.9.9,149.112.112.112"
+  echo "  4) OpenDNS               208.67.222.222,208.67.220.220"
+  echo "  5) CleanBrowsing (Sec)   185.228.168.9,185.228.169.9"
+  echo "  6) AdGuard DNS           94.140.14.14,94.140.15.15"
+  echo "  7) NextDNS (example)     45.90.28.0,45.90.30.0"
+  echo ""
+  echo "  e) Reset to automatic DNS"
+  echo "  q) Quit"
+  echo ""
+  printf "Select option: "
+  read -r choice
 
-    case $option in
-        1) apply_dns "8.8.8.8,8.8.4.4"; break;;
-        2) apply_dns "1.1.1.1,1.0.0.1"; break;;
-        3) apply_dns "178.22.122.100,185.51.200.2"; break;;
-        4) apply_dns "78.157.42.100,78.157.42.101"; break;;
-        5) apply_dns "78.157.42.100,1.1.1.1"; break;;
-        6) apply_dns "10.202.10.202,1.1.1.1"; break;;
-        7) apply_dns "10.202.10.202,185.51.200.2"; break;;
-        8) apply_dns "10.202.10.202,10.202.10.102"; break;;
-        9) apply_dns "198.101.242.72,23.253.163.53"; break;;
-        10) apply_dns "8.26.56.26,8.20.247.20"; break;;
-        11) apply_dns "84.200.69.80,84.200.70.40"; break;;
-        12) apply_dns "209.244.0.3,209.244.0.4"; break;;
-        13) apply_dns "208.67.222.222,208.67.220.220"; break;;
-        14) apply_dns "185.121.177.177,169.239.202.202"; break;;
-        15) apply_dns "9.9.9.9,149.112.112.112"; break;;
-        16) apply_dns "64.6.64.6,64.6.65.6"; break;;
-        17) apply_dns "77.88.8.8,77.88.8.1"; break;;
-        e|E) reset_dns; break;;
-        *) echo "Invalid option, try again."; sleep 1;;
-    esac
+  case "$choice" in
+    1) apply_dns "8.8.8.8,8.8.4.4";;
+    2) apply_dns "1.1.1.1,1.0.0.1";;
+    3) apply_dns "9.9.9.9,149.112.112.112";;
+    4) apply_dns "208.67.222.222,208.67.220.220";;
+    5) apply_dns "185.228.168.9,185.228.169.9";;
+    6) apply_dns "94.140.14.14,94.140.15.15";;
+    7) apply_dns "45.90.28.0,45.90.30.0";;
+    e|E) reset_dns;;
+    q|Q) exit 0;;
+    *) echo "Invalid option."; sleep 1;;
+  esac
+
+  echo ""
+  echo "Press Enter to continue..."
+  read -r _
 done
